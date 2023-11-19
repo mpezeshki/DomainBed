@@ -20,6 +20,7 @@ from domainbed import hparams_registry
 from domainbed import algorithms
 from domainbed.lib import misc
 from domainbed.lib.fast_data_loader import InfiniteDataLoader, FastDataLoader
+from read_results import best_pt_file
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Domain generalization')
@@ -39,6 +40,8 @@ if __name__ == "__main__":
         help='Seed for everything else')
     parser.add_argument('--steps', type=int, default=None,
         help='Number of steps. Default is dataset-dependent.')
+    parser.add_argument('--group_labels', type=str, default="yes",
+        help='yes, no, or the path to inferred group labels')
     parser.add_argument('--checkpoint_freq', type=int, default=None,
         help='Checkpoint every N steps. Default is dataset-dependent.')
     parser.add_argument('--test_envs', type=int, nargs='+', default=[0])
@@ -56,8 +59,8 @@ if __name__ == "__main__":
     algorithm_dict = None
 
     os.makedirs(args.output_dir, exist_ok=True)
-    sys.stdout = misc.Tee(os.path.join(args.output_dir, 'out.txt'))
-    sys.stderr = misc.Tee(os.path.join(args.output_dir, 'err.txt'))
+    # sys.stdout = misc.Tee(os.path.join(args.output_dir, 'out.txt'))
+    # sys.stderr = misc.Tee(os.path.join(args.output_dir, 'err.txt'))
 
     print("Environment:")
     print("\tPython: {}".format(sys.version.split(" ")[0]))
@@ -100,6 +103,20 @@ if __name__ == "__main__":
             args.test_envs, hparams)
     else:
         raise NotImplementedError
+
+    if args.group_labels == 'yes':
+        # already available in dataset so no action is needed
+        pass
+    elif args.group_labels == 'no':
+        # merge train envs as if no group info is available
+        misc.merge_envs(args, dataset)
+    else:
+        # args.group_labels is a path to a directory that contains
+        # inferred train group labels for different hparam combinations
+        # the best (wrt flip rate) is selected.
+        misc.merge_envs(args, dataset)
+        args.group_labels = best_pt_file(args.group_labels, 'XRM', args.dataset, args.test_envs)
+        misc.infer_envs(args, dataset)
 
     # Split each env into an 'in-split' and an 'out-split'. We'll train on
     # each in-split except the test envs, and evaluate on all splits.
@@ -172,8 +189,12 @@ if __name__ == "__main__":
         for i in range(len(uda_splits))]
 
     algorithm_class = algorithms.get_algorithm_class(args.algorithm)
-    algorithm = algorithm_class(dataset.input_shape, dataset.num_classes,
-        len(dataset) - len(args.test_envs), hparams)
+    if args.algorithm == 'XRM':
+        algorithm = algorithm_class(dataset.input_shape, dataset.num_classes,
+            len(dataset) - len(args.test_envs), hparams, train_loaders)
+    else:
+        algorithm = algorithm_class(dataset.input_shape, dataset.num_classes,
+            len(dataset) - len(args.test_envs), hparams)
 
     if algorithm_dict is not None:
         algorithm.load_state_dict(algorithm_dict)
@@ -202,17 +223,25 @@ if __name__ == "__main__":
         }
         torch.save(save_dict, os.path.join(args.output_dir, filename))
 
-
     last_results_keys = None
     for step in range(start_step, n_steps):
         step_start_time = time.time()
-        minibatches_device = [(x.to(device), y.to(device))
-            for x,y in next(train_minibatches_iterator)]
-        if args.task == "domain_adaptation":
-            uda_device = [x.to(device)
-                for x,_ in next(uda_minibatches_iterator)]
+        if args.algorithm == 'XRM':
+            minibatches_device = [(idx, x.to(device), y.to(device))
+                for idx, (x, y) in next(train_minibatches_iterator)]
+            if args.task == "domain_adaptation":
+                uda_device = [x.to(device)
+                    for _, (x, _) in next(uda_minibatches_iterator)]
+            else:
+                uda_device = None
         else:
-            uda_device = None
+            minibatches_device = [(x.to(device), y.to(device))
+                for x, y in next(train_minibatches_iterator)]
+            if args.task == "domain_adaptation":
+                uda_device = [x.to(device)
+                    for x,_ in next(uda_minibatches_iterator)]
+            else:
+                uda_device = None
         step_vals = algorithm.update(minibatches_device, uda_device)
         checkpoint_vals['step_time'].append(time.time() - step_start_time)
 
@@ -230,7 +259,7 @@ if __name__ == "__main__":
 
             evals = zip(eval_loader_names, eval_loaders, eval_weights)
             for name, loader, weights in evals:
-                acc = misc.accuracy(algorithm, loader, weights, device)
+                acc = misc.accuracy(algorithm, loader, weights, device, 'env0' in name and args.algorithm == 'XRM')
                 results[name+'_acc'] = acc
 
             results['mem_gb'] = torch.cuda.max_memory_allocated() / (1024.*1024.*1024.)
@@ -259,6 +288,18 @@ if __name__ == "__main__":
                 save_checkpoint(f'model_step{step}.pkl')
 
     save_checkpoint('model.pkl')
+
+    if args.algorithm == 'XRM':
+        tr_va = dataset[0]
+        from torch.utils.data import DataLoader
+        tr_va_loader = DataLoader(
+            tr_va,
+            batch_size=hparams['batch_size'],
+            num_workers=dataset.N_WORKERS)
+
+        cm = misc.cross_mistakes(algorithm, tr_va_loader, weights, device)
+        torch.save(cm, os.path.join(args.output_dir, 'inferred.pt'))
+        print('inferred group labels saved at:' + os.path.join(args.output_dir, 'inferred.pt'))
 
     with open(os.path.join(args.output_dir, 'done'), 'w') as f:
         f.write('done')

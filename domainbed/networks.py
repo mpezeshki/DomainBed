@@ -207,6 +207,22 @@ def Classifier(in_features, out_features, is_nonlinear=False):
         return torch.nn.Linear(in_features, out_features)
 
 
+class TwinNets(torch.nn.Module):
+    def __init__(self, nets):
+        super().__init__()
+        assert len(nets) == 2
+        self.net_a = nets[0]
+        self.net_b = nets[1]
+        self.net_a[-1].weight.data *= 0.0
+        self.net_a[-1].bias.data *= 0.0
+        self.net_b[-1].weight.data *= 0.0
+        self.net_b[-1].bias.data *= 0.0
+
+    def forward(self, x):
+        return torch.cat([self.net_a(x)[..., None],
+                          self.net_b(x)[..., None]], -1)
+
+
 class WholeFish(nn.Module):
     def __init__(self, input_shape, num_classes, hparams, weights=None):
         super(WholeFish, self).__init__()

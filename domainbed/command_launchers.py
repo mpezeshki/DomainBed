@@ -10,6 +10,9 @@ import subprocess
 import time
 import torch
 import os
+import submitit
+import tqdm
+import re
 
 def local_launcher(commands):
     """Launch commands serially on the local machine."""
@@ -56,10 +59,28 @@ def multi_gpu_launcher(commands):
         if p is not None:
             p.wait()
 
+
+def submitit_launcher(commands):
+    def launch_subprocess(command):
+        subprocess.call(command, shell=True)
+
+    executor = submitit.SlurmExecutor(folder="/checkpoint/mpezeshki/submitit")
+    executor.update_parameters(
+        time=12 * 60,
+        partition="learnlab",
+        gpus_per_node=1,
+        cpus_per_task=10,
+        constraint="volta32gb")
+
+    executor.update_parameters(array_parallelism=512)
+    executor.map_array(launch_subprocess, commands)
+
+
 REGISTRY = {
     'local': local_launcher,
     'dummy': dummy_launcher,
-    'multi_gpu': multi_gpu_launcher
+    'multi_gpu': multi_gpu_launcher,
+    'submitit': submitit_launcher
 }
 
 try:

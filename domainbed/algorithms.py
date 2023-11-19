@@ -23,6 +23,7 @@ from domainbed.lib.misc import (
 
 ALGORITHMS = [
     'ERM',
+    'XRM'
     'Fish',
     'IRM',
     'GroupDRO',
@@ -118,6 +119,76 @@ class ERM(Algorithm):
 
     def predict(self, x):
         return self.network(x)
+
+
+class XRM(Algorithm):
+
+    def __init__(self, input_shape, num_classes, num_domains, hparams, train_loaders):
+        super(XRM, self).__init__(input_shape, num_classes, num_domains,
+                                  hparams)
+        nets = []
+        for _ in range(2):
+            featurizer = networks.Featurizer(input_shape, self.hparams)
+            classifier = networks.Classifier(
+                featurizer.n_outputs,
+                num_classes,
+                self.hparams['nonlinear_classifier'])
+            nets += [nn.Sequential(featurizer, classifier)]
+
+        self.network = networks.TwinNets(nets)
+        self.optimizer = torch.optim.Adam(
+            self.network.parameters(),
+            lr=self.hparams["lr"],
+            weight_decay=self.hparams['weight_decay'])
+        assert len(train_loaders) == 1
+
+        ys = []
+        for data in train_loaders[0].dataset.underlying_dataset:
+            _, (_, y) = data
+            ys.append(y)
+        self.y_tr_dynamic = torch.LongTensor(ys)
+        self.y_tr_true = self.y_tr_dynamic.clone()
+        # randomly assings each training example to one of the twin nets
+        self.assigns = torch.zeros(len(self.y_tr_dynamic), 1).bernoulli_(0.5)
+        self.num_classes = train_loaders[0].dataset.underlying_dataset.num_classes
+
+    def flip_y(self, i, pred_ho):
+        p_ho, y_ho = pred_ho.softmax(dim=1).detach().max(1)
+        p_ho, y_ho = p_ho.cpu(), y_ho.cpu()
+        num_y = self.num_classes
+
+        flip = torch.bernoulli((p_ho - 1 / num_y) * num_y / (num_y - 1)).long()
+        self.y_tr_dynamic[i] = flip * y_ho + (1 - flip) * self.y_tr_dynamic[i]
+
+    def get_loss(self, y_hat, y):
+        losses = F.cross_entropy(y_hat, y.view(-1).long(), reduction='none')
+        return sum([losses[y == yi].mean() for yi in y.unique()])
+
+    def update(self, minibatches, unlabeled=None):
+        # here, we are inferring group labels
+        # so we should have only 1 single env
+        assert len(minibatches) == 1
+        device = "cuda" if minibatches[0][1].is_cuda else "cpu"
+        i, x, _ = minibatches[0]
+        y = self.y_tr_dynamic[i].to(device)
+        assigns = self.assigns[i].to(device)
+        pred_ab = self.network(x)
+        pred_a = pred_ab[..., 0]
+        pred_b = pred_ab[..., 1]
+        pred_hi = pred_a * assigns + pred_b * (1 - assigns)
+        pred_ho = pred_a * (1 - assigns) + pred_b * assigns
+
+        self.optimizer.zero_grad()
+        loss = self.get_loss(pred_hi, y)
+        loss.backward()
+        self.optimizer.step()
+        self.flip_y(i, pred_ho)
+        return {'loss': loss.item(),
+                'flip_rate': self.y_tr_true.ne(self.y_tr_dynamic).float().mean().item()}
+
+    def predict(self, x):
+        # average the output of the two twin nets
+        return self.network(x).mean(-1)
 
 
 class Fish(Algorithm):

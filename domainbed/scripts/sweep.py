@@ -95,8 +95,9 @@ def all_test_env_combinations(n):
         for j in range(i+1, n):
             yield [i, j]
 
-def make_args_list(n_trials, dataset_names, algorithms, n_hparams_from, n_hparams, steps,
-    data_dir, task, holdout_fraction, single_test_envs, hparams):
+def make_args_list(n_trials, group_labels, dataset_names, algorithms,
+                   n_hparams_from, n_hparams, steps, data_dir, task,
+                   holdout_fraction, single_test_envs, hparams):
     args_list = []
     for trial_seed in range(n_trials):
         for dataset in dataset_names:
@@ -118,8 +119,10 @@ def make_args_list(n_trials, dataset_names, algorithms, n_hparams_from, n_hparam
                         train_args['data_dir'] = data_dir
                         train_args['task'] = task
                         train_args['trial_seed'] = trial_seed
-                        train_args['seed'] = misc.seed_hash(dataset,
-                            algorithm, test_envs, hparams_seed, trial_seed)
+                        train_args['group_labels'] = group_labels
+                        # train_args['seed'] = misc.seed_hash(dataset,
+                        #     algorithm, test_envs, hparams_seed, trial_seed)
+                        train_args['seed'] = 0
                         if steps is not None:
                             train_args['steps'] = steps
                         if hparams is not None:
@@ -142,11 +145,12 @@ if __name__ == "__main__":
     parser.add_argument('--algorithms', nargs='+', type=str, default=algorithms.ALGORITHMS)
     parser.add_argument('--task', type=str, default="domain_generalization")
     parser.add_argument('--n_hparams_from', type=int, default=0)
-    parser.add_argument('--n_hparams', type=int, default=20)
+    parser.add_argument('--n_hparams', type=int, default=8)
     parser.add_argument('--output_dir', type=str, required=True)
     parser.add_argument('--data_dir', type=str, required=True)
     parser.add_argument('--seed', type=int, default=0)
-    parser.add_argument('--n_trials', type=int, default=3)
+    parser.add_argument('--n_trials', type=int, default=1)
+    parser.add_argument('--group_labels', type=str, default='yes')
     parser.add_argument('--command_launcher', type=str, required=True)
     parser.add_argument('--steps', type=int, default=None)
     parser.add_argument('--hparams', type=str, default=None)
@@ -157,6 +161,7 @@ if __name__ == "__main__":
 
     args_list = make_args_list(
         n_trials=args.n_trials,
+        group_labels=args.group_labels,
         dataset_names=args.datasets,
         algorithms=args.algorithms,
         n_hparams_from=args.n_hparams_from,

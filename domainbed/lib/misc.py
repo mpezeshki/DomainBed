@@ -152,6 +152,82 @@ def split_dataset(dataset, n, seed=0):
     keys_2 = keys[n:]
     return _SplitDataset(dataset, keys_1), _SplitDataset(dataset, keys_2)
 
+
+def merge_envs(args, dataset):
+    # merge all training envs in dataset into one
+    # keeps test envs untouched
+
+    from torch.utils.data import Dataset
+
+    class MyConcatDataset(Dataset):
+        def __init__(self, datasets, return_idx):
+            self.return_idx = return_idx
+            self.datasets = datasets
+            self.cumulative_sizes = self.cumsum(self.datasets)
+
+        def cumsum(self, datasets):
+            r = [len(d) for d in datasets]
+            return [0] + list(torch.cumsum(torch.tensor(r), 0).tolist())
+
+        def __len__(self):
+            return self.cumulative_sizes[-1]
+
+        def __getitem__(self, idx):
+            if idx < 0:
+                if -idx > len(self):
+                    raise ValueError("Index out of range")
+                idx = len(self) + idx
+            dataset_idx = next(i for i, s in enumerate(self.cumulative_sizes) if s > idx)
+            if dataset_idx == 0:
+                dataset_idx = 1
+            dataset = self.datasets[dataset_idx - 1]
+            local_idx = idx - self.cumulative_sizes[dataset_idx - 1]
+            if self.return_idx:
+                return idx, dataset[local_idx]
+            return dataset[local_idx]
+
+    new_datasets = [[]]
+    for env_i, env in enumerate(dataset):
+        if env_i not in args.test_envs:
+            new_datasets[0].append(env)
+    new_datasets[0] = MyConcatDataset(
+        new_datasets[0], return_idx=args.algorithm == 'XRM')
+    new_datasets[0].num_classes = dataset.num_classes
+
+    for env_i, env in enumerate(dataset):
+        if env_i in args.test_envs:
+            new_datasets += [env]
+
+    # fix the index of test envs now that the number of training
+    # envs have changed to 1.
+    args.test_envs = [1 + i for i in range(len(args.test_envs))]
+    dataset.datasets = new_datasets
+
+
+def infer_envs(args, dataset):
+    cys = []
+    for data in dataset[0]:
+        cys += [data[1][None]]
+    cys = torch.cat(cys)
+    ms, ys = torch.load(args.group_labels)
+    assert (cys == ys).all()
+
+    # At index 0 of dataset, there should be only 1 training set with everything merged
+    keys_1 = torch.arange(len(dataset[0]))[ms.eq(1)]
+    keys_2 = torch.arange(len(dataset[0]))[ms.eq(0)]
+    new_datasets = [_SplitDataset(dataset[0], keys_1),
+                    _SplitDataset(dataset[0], keys_2)]
+
+    for env_i, env in enumerate(dataset):
+        if env_i in args.test_envs:
+            new_datasets += [env]
+
+    # fix the index of test envs now that the number of training
+    # envs have changed to 2.
+    args.test_envs = [2 + i for i in range(len(args.test_envs))]
+    dataset.datasets = new_datasets
+
+
 def random_pairs_of_minibatches(minibatches):
     perm = torch.randperm(len(minibatches)).tolist()
     pairs = []
@@ -184,14 +260,18 @@ def split_meta_train_test(minibatches, num_meta_test=1):
 
     return pairs
 
-def accuracy(network, loader, weights, device):
+def accuracy(network, loader, weights, device, loader_returns_idx=False):
     correct = 0
     total = 0
     weights_offset = 0
 
     network.eval()
     with torch.no_grad():
-        for x, y in loader:
+        for data in loader:
+            if loader_returns_idx:
+                idx, (x, y) = data
+            else:
+                x, y = data
             x = x.to(device)
             y = y.to(device)
             p = network.predict(x)
@@ -209,6 +289,43 @@ def accuracy(network, loader, weights, device):
     network.train()
 
     return correct / total
+
+
+def cross_mistakes(network, loader, weights, device):
+    assert weights is None
+
+    network.eval()
+    pred_a, pred_b = [], []
+    i_s = []
+    ys = []
+    with torch.no_grad():
+        for data in loader:
+            idx, (x, y) = data
+            x = x.to(device)
+            y = y.to(device)
+            p = network.network(x)
+            pred_a += [p[..., 0]]
+            pred_b += [p[..., 1]]
+            i_s += [idx]
+            ys += [y]
+    i_s = torch.cat(i_s)
+    sorted_indices = torch.argsort(i_s)
+    pred_a = torch.cat(pred_a)[sorted_indices]
+    pred_b = torch.cat(pred_b)[sorted_indices]
+    ys = torch.cat(ys)[sorted_indices]
+
+    if pred_a.size(1) == 1:
+        mistake_a = pred_a.gt(0).ne(ys).long() 
+        mistake_b = pred_b.gt(0).ne(ys).long()
+    else:
+        mistake_a = pred_a.argmax(1).ne(ys).long() 
+        mistake_b = pred_b.argmax(1).ne(ys).long()
+
+    ms = torch.logical_or(mistake_a, mistake_b).long().cpu()
+    network.train()
+
+    return ms, ys.cpu()
+
 
 class Tee:
     def __init__(self, fname, mode="a"):
