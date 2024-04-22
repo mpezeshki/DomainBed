@@ -74,7 +74,7 @@ class OracleSelectionMethod(SelectionMethod):
 
 class IIDAccuracySelectionMethod(SelectionMethod):
     """Picks argmax(mean(env_out_acc for env in train_envs))"""
-    name = "training-domain validation set"
+    name = "training-domain validation set (AVG)"
 
     @classmethod
     def _step_acc(self, record):
@@ -98,6 +98,28 @@ class IIDAccuracySelectionMethod(SelectionMethod):
         if not len(test_records):
             return None
         return test_records.map(self._step_acc).argmax('val_acc')
+
+
+class ValidWGA(IIDAccuracySelectionMethod):
+    """Picks argmax(min(env_out_acc for env in train_envs))"""
+    name = "training-domain validation set (WGA)"
+
+    @classmethod
+    def _step_acc(self, record):
+        """Given a single record, return a {val_acc, test_acc} dict."""
+        test_env = record['args']['test_envs'][0]
+        val_env_keys = []
+        for i in itertools.count():
+            if f'env{i}_out_acc' not in record:
+                break
+            if i != test_env:
+                val_env_keys.append(f'env{i}_out_acc')
+        test_in_acc_key = 'env{}_in_acc'.format(test_env)
+        return {
+            'val_acc': np.min([record[key] for key in val_env_keys]),
+            'test_acc': record[test_in_acc_key]
+        }
+
 
 class LeaveOneOutSelectionMethod(SelectionMethod):
     """Picks (hparams, step) by leave-one-out cross validation."""

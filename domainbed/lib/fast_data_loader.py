@@ -59,6 +59,8 @@ class FastDataLoader:
             drop_last=False
         )
 
+        self.dataset = dataset
+
         self._infinite_iterator = iter(torch.utils.data.DataLoader(
             dataset,
             num_workers=num_workers,

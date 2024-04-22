@@ -59,8 +59,8 @@ if __name__ == "__main__":
     algorithm_dict = None
 
     os.makedirs(args.output_dir, exist_ok=True)
-    # sys.stdout = misc.Tee(os.path.join(args.output_dir, 'out.txt'))
-    # sys.stderr = misc.Tee(os.path.join(args.output_dir, 'err.txt'))
+    sys.stdout = misc.Tee(os.path.join(args.output_dir, 'out.txt'))
+    sys.stderr = misc.Tee(os.path.join(args.output_dir, 'err.txt'))
 
     print("Environment:")
     print("\tPython: {}".format(sys.version.split(" ")[0]))
@@ -109,14 +109,15 @@ if __name__ == "__main__":
         pass
     elif args.group_labels == 'no':
         # merge train envs as if no group info is available
-        misc.merge_envs(args, dataset)
+        tr_va_env_index = misc.merge_envs(args, dataset)
     else:
         # args.group_labels is a path to a directory that contains
         # inferred train group labels for different hparam combinations
         # the best (wrt flip rate) is selected.
-        misc.merge_envs(args, dataset)
-        args.group_labels = best_pt_file(args.group_labels, 'XRM', args.dataset, args.test_envs)
-        misc.infer_envs(args, dataset)
+        tr_va_env_index = misc.merge_envs(args, dataset)
+        if '.pt' not in args.group_labels:
+            args.group_labels = best_pt_file(args.group_labels, 'XRM', args.dataset, args.test_envs)
+        misc.infer_envs(args, dataset, tr_va_env_index)
 
     # Split each env into an 'in-split' and an 'out-split'. We'll train on
     # each in-split except the test envs, and evaluate on all splits.
@@ -166,7 +167,7 @@ if __name__ == "__main__":
         batch_size=hparams['batch_size'],
         num_workers=dataset.N_WORKERS)
         for i, (env, env_weights) in enumerate(in_splits)
-        if i not in args.test_envs]
+        if (i not in args.test_envs) and (len(env) != 0)]
 
     uda_loaders = [InfiniteDataLoader(
         dataset=env,
@@ -179,6 +180,7 @@ if __name__ == "__main__":
         dataset=env,
         batch_size=64,
         num_workers=dataset.N_WORKERS)
+        if len(env) != 0 else None 
         for env, _ in (in_splits + out_splits + uda_splits)]
     eval_weights = [None for _, weights in (in_splits + out_splits + uda_splits)]
     eval_loader_names = ['env{}_in'.format(i)
@@ -205,7 +207,7 @@ if __name__ == "__main__":
     uda_minibatches_iterator = zip(*uda_loaders)
     checkpoint_vals = collections.defaultdict(lambda: [])
 
-    steps_per_epoch = min([len(env)/hparams['batch_size'] for env,_ in in_splits])
+    steps_per_epoch = min([len(env)/hparams['batch_size'] for env,_ in in_splits if len(env) != 0])
 
     n_steps = args.steps or dataset.N_STEPS
     checkpoint_freq = args.checkpoint_freq or dataset.CHECKPOINT_FREQ
@@ -259,8 +261,10 @@ if __name__ == "__main__":
 
             evals = zip(eval_loader_names, eval_loaders, eval_weights)
             for name, loader, weights in evals:
-                acc = misc.accuracy(algorithm, loader, weights, device, 'env0' in name and args.algorithm == 'XRM')
-                results[name+'_acc'] = acc
+                if loader is not None:
+                    is_my_concat = 'MyConcatDataset' in str(loader.dataset.underlying_dataset)
+                    acc = misc.accuracy(algorithm, loader, weights, device, is_my_concat and args.algorithm == 'XRM')
+                    results[name+'_acc'] = acc
 
             results['mem_gb'] = torch.cuda.max_memory_allocated() / (1024.*1024.*1024.)
 
@@ -290,7 +294,7 @@ if __name__ == "__main__":
     save_checkpoint('model.pkl')
 
     if args.algorithm == 'XRM':
-        tr_va = dataset[0]
+        tr_va = dataset[tr_va_env_index]
         from torch.utils.data import DataLoader
         tr_va_loader = DataLoader(
             tr_va,

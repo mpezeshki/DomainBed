@@ -122,7 +122,7 @@ def make_args_list(n_trials, group_labels, dataset_names, algorithms,
                         train_args['group_labels'] = group_labels
                         # train_args['seed'] = misc.seed_hash(dataset,
                         #     algorithm, test_envs, hparams_seed, trial_seed)
-                        train_args['seed'] = 0
+                        train_args['seed'] = 1991
                         if steps is not None:
                             train_args['steps'] = steps
                         if hparams is not None:
@@ -145,10 +145,10 @@ if __name__ == "__main__":
     parser.add_argument('--algorithms', nargs='+', type=str, default=algorithms.ALGORITHMS)
     parser.add_argument('--task', type=str, default="domain_generalization")
     parser.add_argument('--n_hparams_from', type=int, default=0)
-    parser.add_argument('--n_hparams', type=int, default=8)
+    parser.add_argument('--n_hparams', type=int, default=16)
     parser.add_argument('--output_dir', type=str, required=True)
     parser.add_argument('--data_dir', type=str, required=True)
-    parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--seed', type=int, default=1991)
     parser.add_argument('--n_trials', type=int, default=1)
     parser.add_argument('--group_labels', type=str, default='yes')
     parser.add_argument('--command_launcher', type=str, required=True)
@@ -186,7 +186,8 @@ if __name__ == "__main__":
     )
 
     if args.command == 'launch':
-        to_launch = [j for j in jobs if j.state == Job.NOT_LAUNCHED]
+        # to_launch = [j for j in jobs if j.state == Job.NOT_LAUNCHED]
+        to_launch = jobs
         print(f'About to launch {len(to_launch)} jobs.')
         if not args.skip_confirmation:
             ask_for_confirmation()
